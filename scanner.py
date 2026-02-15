@@ -18,6 +18,8 @@ import concurrent.futures
 import ctypes
 import json
 from fpdf import FPDF
+import shutil
+import yara
 
 try:
     import psutil
@@ -233,10 +235,35 @@ class VulnerabilityManager:
 
 
 class MalwareScanner:
-    """Clase para escanear archivos potencialmente maliciosos"""
+    """Clase para escanear archivos potencialmente maliciosos con motores avanzados (YARA)"""
+
+    # Reglas YARA básicas integradas para detección de amenazas comunes
+    BASIC_YARA_RULES = """
+        rule WebShell_Generic {
+            strings:
+                $s1 = "eval(base64_decode("
+                $s2 = "shell_exec("
+                $s3 = "system($_GET["
+            condition:
+                any of them
+        }
+        rule Malicious_Cmd_Generic {
+            strings:
+                $s1 = "powershell.exe -ExecutionPolicy Bypass"
+                $s2 = "net user admin /add"
+                $s3 = "WScript.Shell"
+            condition:
+                any of them
+        }
+        rule Hex_Encoded_Code {
+            strings:
+                $s1 = /\\\\x[0-9a-fA-F]{2}/
+            condition:
+                #s1 > 50
+        }
+    """
 
     # Extensiones de archivos sospechosas (principalmente para Windows)
-    # En sistemas Unix, también considera .sh, .py ejecutables, y binarios sin extensión
     SUSPICIOUS_EXTENSIONS = [
         '.exe', '.bat', '.cmd', '.com', '.scr', '.pif',
         '.vbs', '.js', '.jar', '.msi', '.dll', '.ps1'
@@ -255,6 +282,29 @@ class MalwareScanner:
         'eval(', 'exec(', 'base64_decode', 'os.system', 'subprocess.Popen',
         'powershell -e', 'WScript.Shell', 'net user', 'Socket.Connect'
     ]
+
+    def __init__(self):
+        try:
+            self.yara_rules = yara.compile(source=self.BASIC_YARA_RULES)
+            self.yara_enabled = True
+        except Exception as e:
+            print(
+                f"{Fore.RED}[!] Error al compilar reglas YARA: {e}{Style.RESET_ALL}")
+            self.yara_enabled = False
+
+    def load_external_rules(self, rules_path: str):
+        """Carga reglas YARA externas desde un archivo para mejorar la detección"""
+        if not os.path.exists(rules_path):
+            print(
+                f"{Fore.RED}[!] No se encontró el archivo de reglas: {rules_path}{Style.RESET_ALL}")
+            return
+        try:
+            self.yara_rules = yara.compile(filepath=rules_path)
+            print(
+                f"{Fore.GREEN}[+] Reglas YARA externas cargadas exitosamente.{Style.RESET_ALL}")
+        except Exception as e:
+            print(
+                f"{Fore.RED}[!] Error al cargar reglas externas: {e}{Style.RESET_ALL}")
 
     def scan_directory(self, path: str, recursive: bool = True) -> List[dict]:
         """Escanea un directorio en busca de archivos sospechosos"""
@@ -288,7 +338,17 @@ class MalwareScanner:
         return suspicious_files
 
     def is_suspicious(self, file_path: str) -> bool:
-        """Determina si un archivo es sospechoso con múltiples criterios"""
+        """Determina si un archivo es sospechoso con múltiples criterios (YARA priorizado)"""
+
+        # Criterio 0: Motor YARA (Búsqueda de patrones de malware conocidos)
+        if self.yara_enabled:
+            try:
+                matches = self.yara_rules.match(file_path)
+                if matches:
+                    return True
+            except Exception:
+                pass
+
         _, ext = os.path.splitext(file_path)
         ext = ext.lower()
 
@@ -296,7 +356,7 @@ class MalwareScanner:
         if ext in self.SUSPICIOUS_EXTENSIONS:
             return True
 
-        # Criterio 2: Verificar encabezados (Magic Numbers) para archivos sin extensión o renombrados
+        # Criterio 2: Verificar encabezados (Magic Numbers)
         try:
             with open(file_path, 'rb') as f:
                 header = f.read(4)
@@ -306,11 +366,10 @@ class MalwareScanner:
         except Exception:
             pass
 
-        # Criterio 3: Búsqueda de strings maliciosos en archivos de texto/scripts
+        # Criterio 3: Búsqueda de strings maliciosos
         if ext in ['.js', '.vbs', '.ps1', '.bat', '.py', '.txt']:
             try:
                 with open(file_path, 'r', errors='ignore') as f:
-                    # Leemos solo el inicio por rendimiento
                     content = f.read(10000)
                     for keyword in self.SUSPICIOUS_KEYWORDS:
                         if keyword.lower() in content.lower():
@@ -321,27 +380,36 @@ class MalwareScanner:
         return False
 
     def get_file_info(self, file_path: str) -> dict:
-        """Obtiene información detallada de un archivo y razón de sospecha"""
+        """Obtiene información detallada incluyendo detección YARA"""
         try:
             stat_info = os.stat(file_path)
             file_hash = self.calculate_hash(file_path)
-            reason = "Extensión sospechosa"
+            reason = "Patrones genéricos"
 
-            # Determinar razón más específica
-            _, ext = os.path.splitext(file_path)
-            if ext.lower() not in self.SUSPICIOUS_EXTENSIONS:
-                reason = "Contenido/Firma sospechosa"
+            # Chequeo específico YARA para la razón
+            if self.yara_enabled:
+                try:
+                    matches = self.yara_rules.match(file_path)
+                    if matches:
+                        reason = f"YARA: {matches[0].rule}"
+                except Exception:
+                    pass
 
-            try:
-                with open(file_path, 'r', errors='ignore') as f:
-                    content = f.read(5000)
-                    for keyword in self.SUSPICIOUS_KEYWORDS:
-                        if keyword.lower() in content.lower():
-                            reason = f"Keyword detectada: {keyword}"
-                            break
-            except Exception:
-                pass
-
+            # Si no hubo YARA, buscar otras razones
+            if "YARA" not in reason:
+                _, ext = os.path.splitext(file_path)
+                if ext.lower() in self.SUSPICIOUS_EXTENSIONS:
+                    reason = "Extensión sospechosa"
+                else:
+                    try:
+                        with open(file_path, 'r', errors='ignore') as f:
+                            content = f.read(5000)
+                            for keyword in self.SUSPICIOUS_KEYWORDS:
+                                if keyword.lower() in content.lower():
+                                    reason = f"Keyword detectada: {keyword}"
+                                    break
+                    except Exception:
+                        pass
             # Manejar timestamps inválidos
             try:
                 modified_time = datetime.fromtimestamp(
@@ -377,7 +445,7 @@ class MalwareScanner:
 
 
 class ReportGenerator:
-    """Clase para generar reportes en PDF y JSON"""
+    """Clase para generar reportes en PDF y JSON con formato profesional"""
 
     @staticmethod
     def generate_json(data: dict, filename: str = "reporte_seguridad.json"):
@@ -394,46 +462,260 @@ class ReportGenerator:
 
     @staticmethod
     def generate_pdf(data: dict, filename: str = "reporte_seguridad.pdf"):
-        """Genera un reporte visual en PDF"""
+        """Genera un reporte visual profesional en PDF con tablas"""
         try:
             pdf = FPDF()
             pdf.add_page()
+            pdf.set_auto_page_break(auto=True, margin=15)
 
-            # Título
-            pdf.set_font("Arial", 'B', 16)
-            pdf.cell(190, 10, "Reporte de Seguridad de Red", ln=True, align='C')
+            # Título y Header
+            pdf.set_fill_color(0, 51, 102)
+            pdf.rect(0, 0, 210, 40, 'F')
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_font("Arial", 'B', 24)
+            pdf.cell(190, 20, "REPORTE DE SEGURIDAD", ln=True, align='C')
             pdf.set_font("Arial", size=10)
             pdf.cell(
                 190, 10, f"Generado el: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True, align='C')
-            pdf.ln(10)
+            pdf.ln(20)
 
-            # Resumen
-            pdf.set_font("Arial", 'B', 12)
-            pdf.cell(190, 10, "Resumen del Escaneo", ln=True)
-            pdf.set_font("Arial", size=10)
+            pdf.set_text_color(0, 0, 0)
 
-            for section, results in data.items():
-                pdf.set_font("Arial", 'B', 11)
-                pdf.cell(190, 10, f"Sección: {section.capitalize()}", ln=True)
-                pdf.set_font("Arial", size=10)
+            # Sección: Puertos Locales
+            if "puertos_locales" in data and data["puertos_locales"]:
+                pdf.set_font("Arial", 'B', 14)
+                pdf.cell(
+                    0, 10, "1. Analisis de Puertos Locales", ln=True)
+                pdf.ln(2)
 
-                if isinstance(results, list):
-                    for item in results:
-                        pdf.multi_cell(0, 5, str(item))
-                        pdf.ln(2)
-                elif isinstance(results, dict):
-                    for key, val in results.items():
-                        pdf.multi_cell(0, 5, f"{key}: {val}")
-                        pdf.ln(2)
-                pdf.ln(5)
+                # Tabla
+                pdf.set_font("Arial", 'B', 9)
+                with pdf.table(col_widths=(20, 40, 20, 30, 30, 50), text_align="LEFT") as table:
+                    header = table.row()
+                    header.cell("Puerto")
+                    header.cell("Proceso")
+                    header.cell("PID")
+                    header.cell("Servicio")
+                    header.cell("Estado")
+                    header.cell("Recomendacion")
+
+                    pdf.set_font("Arial", size=8)
+                    for p in data["puertos_locales"]:
+                        row = table.row()
+                        row.cell(str(p['port']))
+                        row.cell(p['process'])
+                        row.cell(str(p['pid']))
+                        row.cell(p['service'])
+                        row.cell("ALERTA" if p['vulnerable'] else "OK")
+                        row.cell(p.get('analysis', "Monitorear"))
+                pdf.ln(10)
+
+            # Sección: Red
+            if "red_local" in data and data["red_local"]:
+                pdf.set_font("Arial", 'B', 14)
+                pdf.cell(0, 10, "2. Analisis de Red Local", ln=True)
+                pdf.ln(2)
+                for host, ports in data["red_local"].items():
+                    pdf.set_font("Arial", 'B', 11)
+                    pdf.cell(0, 8, f"Host: {host}", ln=True)
+                    with pdf.table(col_widths=(25, 40, 125)) as table:
+                        h = table.row()
+                        h.cell("Puerto")
+                        h.cell("Servicio")
+                        h.cell("Descripcion")
+                        pdf.set_font("Arial", size=8)
+                        for p in ports:
+                            row = table.row()
+                            row.cell(str(p['port']))
+                            row.cell(p['service'])
+                            row.cell(
+                                f"Servicio {p['service']} detectado como {'vulnerable' if p['vulnerable'] else 'seguro'}.")
+                    pdf.ln(5)
+                pdf.ln(10)
+
+            # Sección: Malware
+            if "malware" in data and data["malware"]:
+                pdf.set_font("Arial", 'B', 14)
+                pdf.cell(0, 10, "3. Analisis de Archivos Sospechosos", ln=True)
+                pdf.ln(2)
+                with pdf.table(col_widths=(50, 40, 30, 70)) as table:
+                    h = table.row()
+                    h.cell("Archivo")
+                    h.cell("Razon")
+                    h.cell("Confianza")
+                    h.cell("Accion")
+                    pdf.set_font("Arial", size=8)
+                    for m in data["malware"]:
+                        row = table.row()
+                        row.cell(m['name'][:25])
+                        row.cell(m.get('reason', 'N/A')[:20])
+                        row.cell(m.get('trust_level', 'Bajo'))
+                        row.cell("ELIMINAR" if m.get('trust_level')
+                                 == 'CRITICO' else "Investigar")
+                pdf.ln(10)
 
             pdf.output(filename)
             print(
-                f"{Fore.GREEN}[+] Reporte PDF generado: {filename}{Style.RESET_ALL}")
+                f"{Fore.GREEN}[+] Reporte PDF profesional generado: {filename}{Style.RESET_ALL}")
             return True
         except Exception as e:
             print(f"{Fore.RED}[!] Error al generar PDF: {e}{Style.RESET_ALL}")
             return False
+
+
+class SecurityAgent:
+    """Agente de toma de decisiones para determinar confianza y contramedidas"""
+
+    WHITELIST_PROCESSES = ['svchost.exe', 'System', 'lsass.exe',
+                           'services.exe', 'explorer.exe', 'python.exe', 'Code.exe']
+
+    @classmethod
+    def analyze_local_security(cls, ports_data: List[dict]) -> List[dict]:
+        """Analiza puertos locales y asigna una acción recomendada"""
+        for p in ports_data:
+            if p['vulnerable']:
+                if p['process'] in cls.WHITELIST_PROCESSES:
+                    p['analysis'] = "Restringir Firewall"
+                else:
+                    p['analysis'] = "CERRAR PROCESO"
+            else:
+                p['analysis'] = "OK"
+        return ports_data
+
+    @classmethod
+    def analyze_malware_confidence(cls, malware_data: List[dict]) -> List[dict]:
+        """Determina el nivel de confianza basado en YARA y metadatos"""
+        for m in malware_data:
+            path_lower = m['path'].lower()
+            reason = m.get('reason', '')
+
+            # Prioridad 1: Detección YARA (Reglas de Inteligencia)
+            if "YARA" in reason:
+                if ".venv" in path_lower or "node_modules" in path_lower:
+                    m['trust_level'] = "Sospechoso (Entorno Dev)"
+                else:
+                    m['trust_level'] = "CRITICO"
+            # Prioridad 2: Excepciones de desarrollo
+            elif ".venv" in path_lower or "node_modules" in path_lower:
+                m['trust_level'] = "Seguro (Dev)"
+            # Prioridad 3: Ejecutables fuera de lugar
+            elif m['name'].endswith('.exe') and "windows" not in path_lower:
+                m['trust_level'] = "CRITICO"
+            else:
+                m['trust_level'] = "Bajo"
+        return malware_data
+
+
+class MitigationAgent:
+    """Agente ejecutor de acciones de mitigación basados en el análisis"""
+
+    QUARANTINE_DIR = "quarantine_vault"
+
+    def __init__(self):
+        if not os.path.exists(self.QUARANTINE_DIR):
+            os.makedirs(self.QUARANTINE_DIR)
+        self.history = []
+
+    def execute_mitigation(self, json_file: str):
+        """Lee el JSON y ejecuta acciones de limpieza según el análisis del agente"""
+        try:
+            with open(json_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            print(
+                f"\n{Fore.CYAN}=== AGENTE DE MITIGACION ACTIVADO ==={Style.RESET_ALL}")
+
+            # 1. Mitigar Puertos/Procesos
+            if "puertos_locales" in data:
+                for p in data["puertos_locales"]:
+                    if p.get('analysis') == "CERRAR PROCESO":
+                        print(
+                            f"{Fore.YELLOW}[!] Detectado proceso no confiable: {p['process']} (PID: {p['pid']}){Style.RESET_ALL}")
+                        confirm = input(
+                            f"¿Ejecutar cierre de proceso {p['pid']}? (s/n): ")
+                        if confirm.lower() == 's':
+                            if VulnerabilityManager.close_port(p['port'], p['pid']):
+                                self.history.append(
+                                    f"Proceso CERRADO: {p['process']} (PID: {p['pid']}, Puerto: {p['port']})")
+                            else:
+                                self.history.append(
+                                    f"FALLO al cerrar proceso: {p['process']} (PID: {p['pid']})")
+
+            # 2. Mitigar Malware
+            if "malware" in data:
+                for m in data["malware"]:
+                    if m.get('trust_level') == "CRITICO":
+                        print(
+                            f"{Fore.RED}[!!!] AMENAZA CRITICA: {m['name']} en {m['path']}{Style.RESET_ALL}")
+                        print("[1] Poner en Cuarentena")
+                        print("[2] Eliminar Permanentemente")
+                        print("[3] Ignorar")
+                        choice = input("Selecciona acción: ")
+
+                        if choice == '1':
+                            if self.quarantine(m['path']):
+                                self.history.append(
+                                    f"Archivo en CUARENTENA: {m['name']}")
+                        elif choice == '2':
+                            if self.delete_permanently(m['path']):
+                                self.history.append(
+                                    f"Archivo ELIMINADO: {m['name']}")
+                        else:
+                            self.history.append(
+                                f"Amenaza IGNORADA (Manual): {m['name']}")
+
+            print(
+                f"\n{Fore.GREEN}[+] Acciones de mitigación finalizadas.{Style.RESET_ALL}")
+
+        except Exception as e:
+            print(
+                f"{Fore.RED}[!] Error en el Agente de Mitigación: {e}{Style.RESET_ALL}")
+
+    def quarantine(self, file_path: str) -> bool:
+        """Mueve el archivo a la bóveda de cuarentena"""
+        try:
+            if not os.path.exists(file_path):
+                return False
+            filename = os.path.basename(file_path)
+            dest = os.path.join(self.QUARANTINE_DIR, f"{filename}.quarantine")
+            shutil.move(file_path, dest)
+            print(
+                f"{Fore.GREEN}[+] Archivo movido a cuarentena: {dest}{Style.RESET_ALL}")
+            return True
+        except Exception as e:
+            print(
+                f"{Fore.RED}[!] Error al poner en cuarentena: {e}{Style.RESET_ALL}")
+            return False
+
+    def delete_permanently(self, file_path: str) -> bool:
+        """Elimina el archivo del sistema"""
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                print(
+                    f"{Fore.RED}[-] Archivo eliminado permanentemente: {file_path}{Style.RESET_ALL}")
+                return True
+            return False
+        except Exception as e:
+            print(
+                f"{Fore.RED}[!] Error al eliminar archivo: {e}{Style.RESET_ALL}")
+            return False
+
+    def print_summary(self):
+        """Muestra un resumen de todas las acciones tomadas"""
+        print(
+            f"\n{Fore.CYAN}╔═══════════════════════════════════════════════════════════╗")
+        print(f"║             RESUMEN DE ACCIONES DEL AGENTE              ║")
+        print(
+            f"╚═══════════════════════════════════════════════════════════╝{Style.RESET_ALL}")
+
+        if not self.history:
+            print(
+                f"{Fore.YELLOW}No se realizaron acciones de mitigación.{Style.RESET_ALL}")
+        else:
+            for idx, action in enumerate(self.history, 1):
+                print(f"{Fore.GREEN}[{idx}] {action}{Style.RESET_ALL}")
+        print("-" * 60)
 
 
 def print_banner():
