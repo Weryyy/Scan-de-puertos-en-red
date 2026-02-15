@@ -1,23 +1,19 @@
-# Guía de Inicio Rápido
+# Guía de Inicio Rápido - EDR Sniper
 
-## Instalación Rápida
+Esta guía te ayudará a poner en marcha tu sistema de ciberseguridad en menos de 2 minutos.
 
-```bash
-# 1. Clonar el repositorio
-git clone https://github.com/Weryyy/Scan-de-puertos-en-red.git
-cd Scan-de-puertos-en-red
+## 1. Despliegue con un Clic (Recomendado)
+Usa el archivo [setup_and_run.bat](setup_and_run.bat). Haz clic derecho y selecciona **"Ejecutar como administrador"**.
+El script detectará si prefieres usar **Docker** o una **instalación de Python local**.
 
-# 2. Instalar dependencias
-pip install -r requirements.txt
+## 2. Flujo de Trabajo del Diagnóstico
+1. **Escaneo:** El sistema busca puertos abiertos y archivos sospechosos.
+2. **Análisis:** El Agente de Seguridad usa reglas YARA para clasificar el riesgo.
+3. **Reporte:** Se generan archivos .pdf y .json en la raíz del proyecto.
+4. **Respuesta:** El Agente de Mitigación te preguntará si deseas aplicar contramedidas (Cerrar procesos o Cuarentena).
 
-# 3. Ejecutar el programa
-python scanner.py
-```
-
-## Primer Uso
-
-### Opción 1: Escanear tu PC
-```
+## 3. Personalización de Inteligencia
+Puedes añadir tus propias reglas en [yara_rules/advanced_detection.yar](yara_rules/advanced_detection.yar). El sistema las cargará automáticamente en la siguiente ejecución.
 Selecciona una opción: 1
 ```
 Verás una lista de todos los puertos abiertos en tu computadora.

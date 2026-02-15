@@ -1,52 +1,48 @@
-# Scan-de-puertos-en-red
-Código para escanear los puertos de mi propio PC y los de mi red
+# 🕵️‍♂️ Escáner de Puertos y Respuesta ante Incidentes (EDR-Lite)
 
-## Descripción
-Este programa es una herramienta completa de seguridad que te permite:
-- 🔍 Escanear puertos abiertos en tu PC local
-- 🌐 Escanear puertos en dispositivos de tu red local
-- 🔒 Cerrar puertos vulnerables detectados
-- 🛡️ Buscar archivos potencialmente maliciosos
+Este proyecto ha evolucionado de un simple escáner a una herramienta integral de **Detección y Respuesta (EDR)** para redes locales y sistemas Windows/Linux. Utiliza inteligencia de amenazas basada en estándares industriales como **YARA** para identificar, analizar y mitigar vulnerabilidades.
 
-## Requisitos
-- Python 3.6 o superior
-- Dependencias listadas en `requirements.txt`
+## 🚀 Funcionalidades Principales
 
-## Instalación
+*   **🔍 Escaneo de Red Inteligente:** Identificación de hosts activos y puertos abiertos usando concurrencia.
+*   **🛡️ Agente de Análisis de Seguridad:** Decide el nivel de riesgo de procesos y archivos basándose en una Whitelist y patrones de comportamiento.
+*   **🦠 Motor de Malware YARA:** Detección de amenazas reales (Troyanos, Ransomware, Shells) mediante reglas binarias.
+*   **⚡ Agente de Mitigación:** Permite cerrar procesos maliciosos, eliminar archivos o moverlos a una **Bóveda de Cuarentena**.
+*   **📋 Reportes Profesionales:** Generación automática de reportes en PDF (con tablas) y JSON (para automatización).
 
-1. Clona este repositorio:
+## 🛠️ Instalación y Uso
+
+### Opción A: Automatizada (Windows)
+Ejecuta el archivo [setup_and_run.bat](setup_and_run.bat) con privilegios de Administrador. Este script:
+1. Detecta si tienes **Docker** (y te ofrece usarlo).
+2. Si no, crea un entorno virtual de Python.
+3. Instala todas las dependencias.
+4. Lanza el diagnóstico completo.
+
+### Opción B: Docker
+Si prefieres aislamiento total:
 ```bash
-git clone https://github.com/Weryyy/Scan-de-puertos-en-red.git
-cd Scan-de-puertos-en-red
+docker build -t scanner-edr .
+docker run -it scanner-edr
 ```
 
-2. Instala las dependencias:
+### Opción C: Manual
 ```bash
+python -m venv .venv
+source .venv/bin/activate  # En Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+python run_full_diagnostic.py
 ```
 
-## Uso
+## 📂 Estructura del Proyecto
 
-Ejecuta el programa con:
-```bash
-python scanner.py
-```
+*   [scanner.py](scanner.py): Motor principal y agentes (Mitigación, Análisis, Reportes).
+*   [run_full_diagnostic.py](run_full_diagnostic.py): Orquestador del escaneo integral.
+*   [yara_rules/](yara_rules/): Directorio para añadir reglas de inteligencia externas (.yar).
+*   [quarantine_vault/](quarantine_vault/): Carpeta segura donde el sistema aísla las amenazas.
 
-### Para sistemas Linux/Mac (con permisos para cerrar puertos):
-```bash
-sudo python scanner.py
-```
-
-## Funcionalidades
-
-### 1. Escaneo de Puertos Locales
-Escanea todos los puertos abiertos en tu computadora y detecta cuáles podrían ser vulnerables.
-
-### 2. Escaneo de Red
-Escanea dispositivos en tu red local para detectar puertos abiertos. Útil para auditorías de seguridad de tu red doméstica.
-
-### 3. Cierre de Puertos Vulnerables
-Permite cerrar puertos identificados como vulnerables mediante la terminación del proceso asociado.
+## ⚠️ Descargo de Responsabilidad
+Esta herramienta está diseñada para fines educativos y auditorías de seguridad autorizadas. El uso de esta herramienta en redes ajenas sin permiso es ilegal.
 
 ### 4. Escaneo de Archivos Maliciosos
 Busca archivos con extensiones sospechosas que podrían representar una amenaza de seguridad.
