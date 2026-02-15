@@ -44,7 +44,7 @@ def test_malware_scanner():
     
     try:
         # Crear directorio de prueba temporal
-        test_dir = "/tmp/scanner_test"
+        test_dir = os.path.join(os.getcwd(), "scanner_test_temp")
         os.makedirs(test_dir, exist_ok=True)
         
         # Crear archivo de prueba con extensión sospechosa
@@ -52,17 +52,24 @@ def test_malware_scanner():
         with open(test_file, "w") as f:
             f.write("Test file")
         
+        # Crear archivo de prueba con palabra clave sospechosa
+        test_script = os.path.join(test_dir, "script.txt")
+        with open(test_script, "w") as f:
+            f.write("System.echo('hello'); eval(payload);")
+        
         # Escanear el directorio
         suspicious = malware_scanner.scan_directory(test_dir, recursive=False)
         
-        if suspicious:
-            print(f"✓ Detección funcionando: {len(suspicious)} archivo(s) sospechoso(s)")
-            print(f"  Archivo detectado: {suspicious[0]['name']}")
+        if len(suspicious) >= 2:
+            print(f"✓ Detección mejorada funcionando: {len(suspicious)} archivos sospechosos")
+            print(f"  Detectado por extensión: {[f['name'] for f in suspicious if f['name'] == 'test.exe'][0]}")
+            print(f"  Detectado por keyword: {[f['name'] for f in suspicious if f['name'] == 'script.txt'][0]}")
         else:
-            print("⚠ No se detectaron archivos sospechosos (puede ser correcto si no hay archivos de prueba)")
+            print(f"⚠ La detección mejorada no captó todos los archivos (Encontrados: {len(suspicious)})")
         
         # Limpiar
         os.remove(test_file)
+        os.remove(test_script)
         os.rmdir(test_dir)
         
         return True

@@ -14,6 +14,10 @@ from datetime import datetime
 import ipaddress
 from typing import List, Tuple
 import hashlib
+import concurrent.futures
+import ctypes
+import json
+from fpdf import FPDF
 
 try:
     import psutil
@@ -120,8 +124,8 @@ class PortScanner:
         return open_ports
     
     def scan_network_range(self, network: str, ports: List[int] = None) -> dict:
-        """Escanea múltiples hosts en un rango de red"""
-        print(f"\n{Fore.CYAN}[*] Escaneando red: {network}{Style.RESET_ALL}")
+        """Escanea múltiples hosts en un rango de red de forma concurrente"""
+        print(f"\n{Fore.CYAN}[*] Escaneando red: {network} (Esto puede tardar...){Style.RESET_ALL}")
         
         try:
             network_obj = ipaddress.ip_network(network, strict=False)
@@ -130,14 +134,26 @@ class PortScanner:
             return {}
         
         results = {}
+        hosts = list(network_obj.hosts())
         
-        for ip in network_obj.hosts():
+        print(f"{Fore.BLUE}[*] Analizando {len(hosts)} posibles hosts...{Style.RESET_ALL}")
+
+        def process_host(ip):
             ip_str = str(ip)
-            # Primero verificar si el host está activo
             if self.is_host_alive(ip_str):
-                print(f"{Fore.GREEN}[+] Host activo: {ip_str}{Style.RESET_ALL}")
                 open_ports = self.scan_network_host(ip_str, ports)
                 if open_ports:
+                    return ip_str, open_ports
+            return None
+
+        # Usar ThreadPoolExecutor para escaneo paralelo
+        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+            future_to_ip = {executor.submit(process_host, ip): ip for ip in hosts}
+            for future in concurrent.futures.as_completed(future_to_ip):
+                result = future.result()
+                if result:
+                    ip_str, open_ports = result
+                    print(f"{Fore.GREEN}[+] Host activo encontrado: {ip_str} ({len(open_ports)} puertos abiertos){Style.RESET_ALL}")
                     results[ip_str] = open_ports
         
         return results
@@ -146,14 +162,25 @@ class PortScanner:
         """Verifica si un host está activo mediante ping"""
         param = '-n' if platform.system().lower() == 'windows' else '-c'
         # -w usa milisegundos en Windows, segundos en Unix
-        timeout_value = '1000' if platform.system().lower() == 'windows' else '1'
+        timeout_value = '500' if platform.system().lower() == 'windows' else '1'
         command = ['ping', param, '1', '-w', timeout_value, host]
         
         try:
+            # Reducimos el timeout del proceso para mayor velocidad
             result = subprocess.run(command, stdout=subprocess.PIPE, 
-                                  stderr=subprocess.PIPE, timeout=2)
+                                  stderr=subprocess.PIPE, timeout=1)
             return result.returncode == 0
         except (subprocess.TimeoutExpired, Exception):
+            return False
+
+    def is_admin(self) -> bool:
+        """Verifica si el programa se está ejecutando con privilegios de administrador"""
+        try:
+            if platform.system().lower() == 'windows':
+                return ctypes.windll.shell32.IsUserAnAdmin() != 0
+            else:
+                return os.getuid() == 0
+        except AttributeError:
             return False
 
 
@@ -202,7 +229,21 @@ class MalwareScanner:
     # En sistemas Unix, también considera .sh, .py ejecutables, y binarios sin extensión
     SUSPICIOUS_EXTENSIONS = [
         '.exe', '.bat', '.cmd', '.com', '.scr', '.pif', 
-        '.vbs', '.js', '.jar', '.msi', '.dll'
+        '.vbs', '.js', '.jar', '.msi', '.dll', '.ps1'
+    ]
+    
+    # Firmas de archivos (Magic numbers)
+    FILE_SIGNATURES = {
+        b'MZ': 'Ejecutable Windows (PE)',
+        b'\x7fELF': 'Ejecutable Linux (ELF)',
+        b'PK\x03\x04': 'Archivo Comprimido/JAR',
+        b'%PDF': 'Documento PDF',
+    }
+
+    # Palabras clave sospechosas en scripts
+    SUSPICIOUS_KEYWORDS = [
+        'eval(', 'exec(', 'base64_decode', 'os.system', 'subprocess.Popen',
+        'powershell -e', 'WScript.Shell', 'net user', 'Socket.Connect'
     ]
     
     def scan_directory(self, path: str, recursive: bool = True) -> List[dict]:
@@ -234,16 +275,59 @@ class MalwareScanner:
         return suspicious_files
     
     def is_suspicious(self, file_path: str) -> bool:
-        """Determina si un archivo es sospechoso basándose en su extensión"""
+        """Determina si un archivo es sospechoso con múltiples criterios"""
         _, ext = os.path.splitext(file_path)
-        return ext.lower() in self.SUSPICIOUS_EXTENSIONS
-    
+        ext = ext.lower()
+        
+        # Criterio 1: Extensión sospechosa
+        if ext in self.SUSPICIOUS_EXTENSIONS:
+            return True
+            
+        # Criterio 2: Verificar encabezados (Magic Numbers) para archivos sin extensión o renombrados
+        try:
+            with open(file_path, 'rb') as f:
+                header = f.read(4)
+                for sig, desc in self.FILE_SIGNATURES.items():
+                    if header.startswith(sig):
+                        return True
+        except Exception:
+            pass
+
+        # Criterio 3: Búsqueda de strings maliciosos en archivos de texto/scripts
+        if ext in ['.js', '.vbs', '.ps1', '.bat', '.py', '.txt']:
+            try:
+                with open(file_path, 'r', errors='ignore') as f:
+                    content = f.read(10000) # Leemos solo el inicio por rendimiento
+                    for keyword in self.SUSPICIOUS_KEYWORDS:
+                        if keyword.lower() in content.lower():
+                            return True
+            except Exception:
+                pass
+                
+        return False
+
     def get_file_info(self, file_path: str) -> dict:
-        """Obtiene información detallada de un archivo"""
+        """Obtiene información detallada de un archivo y razón de sospecha"""
         try:
             stat_info = os.stat(file_path)
             file_hash = self.calculate_hash(file_path)
+            reason = "Extensión sospechosa"
             
+            # Determinar razón más específica
+            _, ext = os.path.splitext(file_path)
+            if ext.lower() not in self.SUSPICIOUS_EXTENSIONS:
+                reason = "Contenido/Firma sospechosa"
+            
+            try:
+                with open(file_path, 'r', errors='ignore') as f:
+                    content = f.read(5000)
+                    for keyword in self.SUSPICIOUS_KEYWORDS:
+                        if keyword.lower() in content.lower():
+                            reason = f"Keyword detectada: {keyword}"
+                            break
+            except Exception:
+                pass
+
             # Manejar timestamps inválidos
             try:
                 modified_time = datetime.fromtimestamp(stat_info.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
@@ -255,7 +339,8 @@ class MalwareScanner:
                 'name': os.path.basename(file_path),
                 'size': stat_info.st_size,
                 'modified': modified_time,
-                'hash': file_hash
+                'hash': file_hash,
+                'reason': reason
             }
         except Exception as e:
             return {
@@ -274,6 +359,63 @@ class MalwareScanner:
             return sha256_hash.hexdigest()
         except Exception:
             return "No disponible"
+
+
+class ReportGenerator:
+    """Clase para generar reportes en PDF y JSON"""
+    
+    @staticmethod
+    def generate_json(data: dict, filename: str = "reporte_seguridad.json"):
+        """Exporta los datos a un archivo JSON para procesamiento automatizado"""
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+            print(f"\n{Fore.GREEN}[+] Reporte JSON generado: {filename}{Style.RESET_ALL}")
+            return True
+        except Exception as e:
+            print(f"{Fore.RED}[!] Error al generar JSON: {e}{Style.RESET_ALL}")
+            return False
+
+    @staticmethod
+    def generate_pdf(data: dict, filename: str = "reporte_seguridad.pdf"):
+        """Genera un reporte visual en PDF"""
+        try:
+            pdf = FPDF()
+            pdf.add_page()
+            
+            # Título
+            pdf.set_font("Arial", 'B', 16)
+            pdf.cell(190, 10, "Reporte de Seguridad de Red", ln=True, align='C')
+            pdf.set_font("Arial", size=10)
+            pdf.cell(190, 10, f"Generado el: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True, align='C')
+            pdf.ln(10)
+            
+            # Resumen
+            pdf.set_font("Arial", 'B', 12)
+            pdf.cell(190, 10, "Resumen del Escaneo", ln=True)
+            pdf.set_font("Arial", size=10)
+            
+            for section, results in data.items():
+                pdf.set_font("Arial", 'B', 11)
+                pdf.cell(190, 10, f"Sección: {section.capitalize()}", ln=True)
+                pdf.set_font("Arial", size=10)
+                
+                if isinstance(results, list):
+                    for item in results:
+                        pdf.multi_cell(0, 5, str(item))
+                        pdf.ln(2)
+                elif isinstance(results, dict):
+                    for key, val in results.items():
+                        pdf.multi_cell(0, 5, f"{key}: {val}")
+                        pdf.ln(2)
+                pdf.ln(5)
+
+            pdf.output(filename)
+            print(f"{Fore.GREEN}[+] Reporte PDF generado: {filename}{Style.RESET_ALL}")
+            return True
+        except Exception as e:
+            print(f"{Fore.RED}[!] Error al generar PDF: {e}{Style.RESET_ALL}")
+            return False
 
 
 def print_banner():
@@ -322,6 +464,13 @@ def scan_local_ports_menu():
     vulnerable_count = sum(1 for p in open_ports if p['vulnerable'])
     if vulnerable_count > 0:
         print(f"\n{Fore.RED}[!] Se encontraron {vulnerable_count} puertos potencialmente vulnerables{Style.RESET_ALL}")
+    
+    # Opción de exportar
+    export = input(f"\n¿Deseas exportar estos resultados? (s/n): ").lower()
+    if export == 's':
+        data = {"puertos_locales": open_ports}
+        ReportGenerator.generate_json(data, "puertos_locales.json")
+        ReportGenerator.generate_pdf(data, "puertos_locales.pdf")
 
 
 def scan_network_menu():
@@ -347,6 +496,12 @@ def scan_network_menu():
         for port_info in ports:
             status = f"{Fore.RED}VULNERABLE{Style.RESET_ALL}" if port_info['vulnerable'] else f"{Fore.GREEN}OK{Style.RESET_ALL}"
             print(f"{port_info['port']:<10} {port_info['service']:<15} {status}")
+    
+    # Opción de exportar
+    export = input(f"\n¿Deseas exportar estos resultados? (s/n): ").lower()
+    if export == 's':
+        ReportGenerator.generate_json(results, "escaneo_red.json")
+        ReportGenerator.generate_pdf({"red_local": results}, "escaneo_red.pdf")
 
 
 def close_vulnerable_ports_menu():
@@ -427,21 +582,37 @@ def scan_malware_menu():
         print(f"\n{Fore.RED}[{idx}] {file_info['name']}{Style.RESET_ALL}")
         print(f"  Ruta: {file_info['path']}")
         if 'error' not in file_info:
+            print(f"  Razón: {Fore.YELLOW}{file_info.get('reason', 'Desconocida')}{Style.RESET_ALL}")
             print(f"  Tamaño: {file_info['size']} bytes")
             print(f"  Modificado: {file_info['modified']}")
             print(f"  Hash SHA256: {file_info['hash']}")
         else:
             print(f"  Error: {file_info['error']}")
+    
+    # Opción de exportar
+    export = input(f"\n¿Deseas exportar estos resultados? (s/n): ").lower()
+    if export == 's':
+        data = {"archivos_sospechosos": suspicious_files}
+        ReportGenerator.generate_json(data, "malware_detectado.json")
+        ReportGenerator.generate_pdf(data, "malware_detectado.pdf")
 
 
 def main():
     """Función principal"""
     print_banner()
     
-    # Verificar si se ejecuta con privilegios
-    if platform.system() != "Windows" and hasattr(os, 'geteuid'):
-        if os.geteuid() != 0:
-            print(f"{Fore.YELLOW}[!] Advertencia: Para cerrar puertos, ejecuta el programa con sudo{Style.RESET_ALL}")
+    scanner_instance = PortScanner()
+    is_admin = scanner_instance.is_admin()
+    
+    # Mostrar estado de privilegios
+    if is_admin:
+        print(f"{Fore.GREEN}[+] Ejecutando con permisos de ADMINISTRADOR. Funciones completas activas.{Style.RESET_ALL}")
+    else:
+        print(f"{Fore.YELLOW}[!] Ejecutando con permisos de usuario estándar.{Style.RESET_ALL}")
+        if platform.system() == "Windows":
+            print(f"{Fore.YELLOW}[!] Para poder cerrar puertos y procesos del sistema, ejecuta como Administrador.{Style.RESET_ALL}")
+        else:
+            print(f"{Fore.YELLOW}[!] Para poder cerrar puertos, ejecuta con sudo.{Style.RESET_ALL}")
     
     while True:
         try:
