@@ -17,7 +17,8 @@ def run_diagnostic():
     ma = MitigationAgent()
 
     # Cargar reglas YARA avanzadas de la nueva carpeta
-    external_rules = os.path.join(os.getcwd(), "yara_rules", "advanced_detection.yar")
+    external_rules = os.path.join(
+        os.getcwd(), "yara_rules", "advanced_detection.yar")
     if os.path.exists(external_rules):
         ms.load_external_rules(external_rules)
 
