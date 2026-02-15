@@ -47,8 +47,11 @@ class PortScanner:
     COMMON_PORTS = [20, 21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 
                     3306, 3389, 5432, 5900, 8080, 8443]
     
+    # Timeout para conexiones de socket (en segundos)
+    DEFAULT_TIMEOUT = 1
+    
     def __init__(self):
-        self.timeout = 1
+        self.timeout = self.DEFAULT_TIMEOUT
         
     def scan_port(self, host: str, port: int) -> bool:
         """Escanea un puerto específico en un host"""
@@ -142,7 +145,9 @@ class PortScanner:
     def is_host_alive(self, host: str) -> bool:
         """Verifica si un host está activo mediante ping"""
         param = '-n' if platform.system().lower() == 'windows' else '-c'
-        command = ['ping', param, '1', '-w', '1000', host]
+        # -w usa milisegundos en Windows, segundos en Unix
+        timeout_value = '1000' if platform.system().lower() == 'windows' else '1'
+        command = ['ping', param, '1', '-w', timeout_value, host]
         
         try:
             result = subprocess.run(command, stdout=subprocess.PIPE, 
@@ -193,14 +198,12 @@ class VulnerabilityManager:
 class MalwareScanner:
     """Clase para escanear archivos potencialmente maliciosos"""
     
-    # Extensiones de archivos sospechosas
+    # Extensiones de archivos sospechosas (principalmente para Windows)
+    # En sistemas Unix, también considera .sh, .py ejecutables, y binarios sin extensión
     SUSPICIOUS_EXTENSIONS = [
         '.exe', '.bat', '.cmd', '.com', '.scr', '.pif', 
         '.vbs', '.js', '.jar', '.msi', '.dll'
     ]
-    
-    def __init__(self):
-        self.suspicious_files = []
     
     def scan_directory(self, path: str, recursive: bool = True) -> List[dict]:
         """Escanea un directorio en busca de archivos sospechosos"""
@@ -241,11 +244,17 @@ class MalwareScanner:
             stat_info = os.stat(file_path)
             file_hash = self.calculate_hash(file_path)
             
+            # Manejar timestamps inválidos
+            try:
+                modified_time = datetime.fromtimestamp(stat_info.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+            except (OSError, ValueError):
+                modified_time = "Fecha inválida"
+            
             return {
                 'path': file_path,
                 'name': os.path.basename(file_path),
                 'size': stat_info.st_size,
-                'modified': datetime.fromtimestamp(stat_info.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
+                'modified': modified_time,
                 'hash': file_hash
             }
         except Exception as e:
@@ -379,9 +388,14 @@ def close_vulnerable_ports_menu():
             print(f"{Fore.RED}[!] Entrada inválida{Style.RESET_ALL}")
     
     elif choice == '2':
-        print(f"\n{Fore.YELLOW}[!] Cerrando todos los puertos vulnerables...{Style.RESET_ALL}")
-        for port_info in vulnerable_ports:
-            manager.close_port(port_info['port'], port_info['pid'])
+        print(f"\n{Fore.RED}[!] ADVERTENCIA: Esto intentará cerrar {len(vulnerable_ports)} puerto(s) vulnerable(s){Style.RESET_ALL}")
+        confirm = input("¿Estás seguro de que deseas continuar? (s/n): ")
+        if confirm.lower() == 's':
+            print(f"\n{Fore.YELLOW}[!] Cerrando todos los puertos vulnerables...{Style.RESET_ALL}")
+            for port_info in vulnerable_ports:
+                manager.close_port(port_info['port'], port_info['pid'])
+        else:
+            print(f"{Fore.CYAN}[*] Operación cancelada{Style.RESET_ALL}")
 
 
 def scan_malware_menu():
@@ -425,7 +439,7 @@ def main():
     print_banner()
     
     # Verificar si se ejecuta con privilegios
-    if platform.system() != "Windows":
+    if platform.system() != "Windows" and hasattr(os, 'geteuid'):
         if os.geteuid() != 0:
             print(f"{Fore.YELLOW}[!] Advertencia: Para cerrar puertos, ejecuta el programa con sudo{Style.RESET_ALL}")
     
