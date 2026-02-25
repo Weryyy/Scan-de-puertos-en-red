@@ -40,6 +40,52 @@ python run_full_diagnostic.py
 *   [run_full_diagnostic.py](run_full_diagnostic.py): Orquestador del escaneo integral.
 *   [yara_rules/](yara_rules/): Directorio para añadir reglas de inteligencia externas (.yar).
 *   [quarantine_vault/](quarantine_vault/): Carpeta segura donde el sistema aísla las amenazas.
+*   [html_to_pdf.py](html_to_pdf.py): Conversor de chats de Instagram a PDF (CLI + biblioteca).
+*   [html_to_pdf_app.py](html_to_pdf_app.py): App móvil (Kivy) para convertir chats de Instagram a PDF.
+
+---
+
+## 💬 Conversor de Chat de Instagram a PDF
+
+Herramienta independiente que convierte los archivos `message_1.html` exportados desde Instagram a PDF legibles. Soporta múltiples archivos y modo móvil.
+
+### Instalación de dependencias adicionales
+
+```bash
+pip install beautifulsoup4 kivy
+```
+
+### Uso desde la línea de comandos (CLI)
+
+```bash
+# Convertir un archivo
+python html_to_pdf.py message_1.html
+
+# Combinar varios archivos en un único PDF
+python html_to_pdf.py message_1.html message_2.html --output mi_chat.pdf
+
+# Generar un PDF separado por cada archivo
+python html_to_pdf.py message_1.html message_2.html --separados
+
+# Especificar directorio de salida
+python html_to_pdf.py message_*.html --separados --dir /ruta/salida/
+
+# Modo interactivo (sin argumentos)
+python html_to_pdf.py
+```
+
+### App móvil (Kivy — Android, iOS, Windows, Linux)
+
+```bash
+python html_to_pdf_app.py
+```
+
+La app permite:
+- Seleccionar uno o varios archivos HTML desde el explorador de archivos del dispositivo.
+- Elegir entre combinar todo en un único PDF o generar PDFs separados.
+- Ver el progreso de la conversión y la ubicación del PDF generado.
+
+Para compilar en Android usa [Buildozer](https://buildozer.readthedocs.io).
 
 ## ⚠️ Descargo de Responsabilidad
 Esta herramienta está diseñada para fines educativos y auditorías de seguridad autorizadas. El uso de esta herramienta en redes ajenas sin permiso es ilegal.
